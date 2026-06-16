@@ -1,0 +1,107 @@
+services:
+  # Ondara data-plane (data + economy on one app, port 8080). Pulls the published
+  # image — no source needed. Verifies your license offline (in-process, RS256).
+  data-plane:
+    image: ghcr.io/akadoshin/ondara-services/data-plane:latest
+    restart: unless-stopped
+    environment:
+      - DEPLOYMENT_MODE=selfhosted
+      - ONDARA_LICENSE_KEY=${ONDARA_LICENSE_KEY}
+      - LICENSE_PUBLIC_KEY=${LICENSE_PUBLIC_KEY:-}
+      # API keys you create in the cloud console are verified against the Control Plane.
+      - CONTROL_PLANE_URL=${CONTROL_PLANE_URL:-https://cp.ondara.cloud}
+      - M2M_SECRET=${M2M_SECRET}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=ondara
+      - DB_PASSWORD=${DB_PASSWORD:-ondara_selfhosted}
+      - DB_NAME=ondara_dataplane
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - APP_PORT=8080
+      # Player session JWT keypair (RS256). The data-plane signs AND verifies player
+      # tokens in-process — set BOTH halves of one keypair. REQUIRED (self-host = prod).
+      # See .env.example for the openssl recipe.
+      - PLAYER_JWT_PRIVATE_KEY=${PLAYER_JWT_PRIVATE_KEY}
+      - PLAYER_JWT_PUBLIC_KEY=${PLAYER_JWT_PUBLIC_KEY}
+      # Optional offline API-key verification (RS256 PUBLIC half) — no Control Plane round-trip.
+      - API_KEY_PUBLIC_KEY=${API_KEY_PUBLIC_KEY:-}
+      - API_KEY_REVOCATION_POLL_SECONDS=${API_KEY_REVOCATION_POLL_SECONDS:-60}
+      # Set CORS_ORIGINS to your game/console origin. "*" is for local testing ONLY.
+      - CORS_ORIGINS=${CORS_ORIGINS:-https://console.example.com}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    networks:
+      - public
+      - internal
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=ondara
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-ondara_selfhosted}
+      - POSTGRES_DB=ondara_dataplane
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ondara -d ondara_dataplane" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 192M
+    networks:
+      - internal
+
+volumes:
+  pgdata:
+  redis-data:
+
+networks:
+  public:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: true
