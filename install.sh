@@ -95,7 +95,8 @@ services:
       - DEPLOYMENT_MODE=selfhosted
       - APP_PORT=8080
       - ONDARA_LICENSE_KEY=${ONDARA_LICENSE_KEY}
-      - LICENSE_PUBLIC_KEY=${LICENSE_PUBLIC_KEY:-}
+      # API keys you create in the cloud console are verified against the Control Plane.
+      - CONTROL_PLANE_URL=${CONTROL_PLANE_URL:-https://cp.ondara.cloud}
       - M2M_SECRET=${M2M_SECRET}
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -107,10 +108,12 @@ services:
       # Player session JWT keypair (RS256) — REQUIRED in self-hosted mode.
       - PLAYER_JWT_PRIVATE_KEY=${PLAYER_JWT_PRIVATE_KEY}
       - PLAYER_JWT_PUBLIC_KEY=${PLAYER_JWT_PUBLIC_KEY}
+      # Optional offline API-key verification (RS256 PUBLIC half) — no round-trip.
       - API_KEY_PUBLIC_KEY=${API_KEY_PUBLIC_KEY:-}
       - API_KEY_REVOCATION_POLL_SECONDS=${API_KEY_REVOCATION_POLL_SECONDS:-60}
       - CORS_ORIGINS=${CORS_ORIGINS:-https://console.example.com}
     depends_on: [postgres, redis]
+    networks: [public, internal]
 
   postgres:
     image: postgres:16-alpine
@@ -120,16 +123,25 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-ondara_selfhosted}
       POSTGRES_DB: ondara_dataplane
     volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [internal]
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
     volumes: [redis-data:/data]
+    networks: [internal]
 
 volumes:
   pgdata:
   redis-data:
+
+networks:
+  public:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: true
 COMPOSE
     success "Minimal docker-compose.yml created"
   fi
@@ -137,10 +149,13 @@ COMPOSE
 
 # ─── Configuration (.env) ─────────────────────────────────────────────────────
 gen_secret() {
+  # 32 random bytes (~256 bits). Strip non-alnum so the value is safe to drop into
+  # .env unquoted (no /, +, = to escape) but keep the FULL length — do NOT truncate,
+  # so the entropy matches the documented `openssl rand -base64 32` recipe.
   if command -v openssl &>/dev/null; then
-    openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 32
+    openssl rand -base64 32 | tr -dc 'a-zA-Z0-9'
   else
-    head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32
+    head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9'
   fi
 }
 
@@ -161,9 +176,16 @@ configure_env() {
   read -r LICENSE_KEY
 
   if [ -z "${LICENSE_KEY}" ]; then
-    warn "No license key entered. Running in dev mode (no license validation)."
-    LICENSE_KEY="dev"
+    error "A license key is required. Self-hosted mode verifies an offline RS256 JWT license and refuses to start without one. Get a free key (1,000 MAU included) at ${CONSOLE_URL}"
   fi
+
+  # Fail fast at install time: a self-hosted JWT license is a JWS compact token
+  # and always starts with "eyJ". The data-plane rejects anything else at boot,
+  # so catch a mistyped/placeholder value here instead of in a restart loop.
+  case "${LICENSE_KEY}" in
+    eyJ*) ;;
+    *) error "Invalid license key. It must be an offline JWT license token (it starts with \"eyJ\"). Copy it from ${CONSOLE_URL}" ;;
+  esac
 
   DB_PASS=$(gen_secret)
   M2M_SECRET=$(gen_secret)
@@ -185,7 +207,8 @@ configure_env() {
 
   # These variable names must match what docker-compose.yml consumes:
   # ONDARA_LICENSE_KEY, M2M_SECRET, DB_PASSWORD, CORS_ORIGINS,
-  # PLAYER_JWT_PRIVATE_KEY, PLAYER_JWT_PUBLIC_KEY.
+  # PLAYER_JWT_PRIVATE_KEY, PLAYER_JWT_PUBLIC_KEY, and the optional
+  # CONTROL_PLANE_URL, API_KEY_PUBLIC_KEY, API_KEY_REVOCATION_POLL_SECONDS.
   cat > .env << EOF
 # Ondara Self-Hosted — generated $(date '+%Y-%m-%d %H:%M')
 # Edit this file to customize your installation.
@@ -208,6 +231,18 @@ PLAYER_JWT_PUBLIC_KEY="${PLAYER_JWT_PUBLIC_KEY}"
 # ── Browser CORS ──────────────────────────────────────
 # Set to your console origin. "*" is for local dev ONLY.
 CORS_ORIGINS=https://console.example.com
+
+# ── API-key verification (optional) ───────────────────
+# Online verification endpoint for API keys you create in the console.
+# Defaults to https://cp.ondara.cloud when unset.
+# CONTROL_PLANE_URL=https://cp.ondara.cloud
+#
+# For offline / air-gapped verification instead, set the Control Plane's
+# RS256 API-key PUBLIC key (PEM). When empty, keys are verified online.
+# API_KEY_PUBLIC_KEY=
+#
+# How often (seconds) the local revocation list refreshes. Default 60.
+# API_KEY_REVOCATION_POLL_SECONDS=60
 EOF
 
   chmod 600 .env
@@ -249,8 +284,8 @@ print_done() {
   echo ""
   echo -e "  ${CYAN}Data Plane${NC}  http://localhost:${DATA_PLANE_PORT}   ${DIM}(data + economy)${NC}"
   echo ""
-  echo -e "  ${DIM}Quick test:${NC}"
-  echo -e "  ${YELLOW}curl -H 'X-API-Key: YOUR_KEY' http://localhost:${DATA_PLANE_PORT}/health${NC}"
+  echo -e "  ${DIM}Quick test (liveness probe — no auth needed):${NC}"
+  echo -e "  ${YELLOW}curl http://localhost:${DATA_PLANE_PORT}/health${NC}"
   echo ""
   echo -e "  ${DIM}Manage:${NC}"
   echo -e "  ${YELLOW}docker compose -f ${INSTALL_DIR}/docker-compose.yml ps${NC}"

@@ -74,10 +74,13 @@ The compose stack starts **three services** on **two networks** (`public` is bri
 Volumes: `pgdata`, `redis-data`. The Control Plane is **not** part of self-host — it stays
 in Ondara's cloud.
 
-> Note: the inlined fallback compose in `install.sh` publishes the same `8080` port and
-> services but defaults to **offline** API-key verification (`API_KEY_PUBLIC_KEY`); the
-> downloaded `docker-compose.yml` additionally sets `CONTROL_PLANE_URL` for online
-> verification.
+> Note: the inlined fallback compose in `install.sh` (used only when GitHub is
+> unreachable) publishes the same `8080` port, the same two networks
+> (`public` bridged, `internal` `internal: true`), and defaults to **online**
+> API-key verification via `CONTROL_PLANE_URL=https://cp.ondara.cloud` — exactly like
+> the downloaded `docker-compose.yml`. It is a trimmed copy, though: it omits the
+> per-service healthchecks and CPU/memory `deploy` limits. For **offline** verification,
+> set `API_KEY_PUBLIC_KEY` in `.env` (empty by default = online).
 
 ## Required env / secrets
 
@@ -87,9 +90,8 @@ in Ondara's cloud.
 | `M2M_SECRET` | yes | Internal service-auth secret. **No default** — the data plane refuses to start without it and keeps its management API closed when empty. Generate with `openssl rand -base64 32`. |
 | `PLAYER_JWT_PRIVATE_KEY` / `PLAYER_JWT_PUBLIC_KEY` | yes | One RS256 keypair the data plane uses to **sign and verify** player session tokens in-process. Required in self-host (production) mode. |
 | `DB_PASSWORD` | recommended | Postgres password (default `ondara_selfhosted` — change it). Used by both Postgres and the data plane. |
-| `CORS_ORIGINS` | recommended | Comma-separated browser origins (your console/game). Defaults to `https://console.example.com`. `*` is for local dev ONLY. |
-| `LICENSE_PUBLIC_KEY` | optional | Override the built-in license verify key. Leave empty to use the binary's pinned default. |
-| `CONTROL_PLANE_URL` | optional | Online API-key verification endpoint (default `https://cp.ondara.cloud`). |
+| `CORS_ORIGINS` | recommended | Comma-separated browser origins (your console/game). This compose recipe defaults it to `https://console.example.com` (the image's own default is `http://localhost:3023`). `*` is for local dev ONLY. |
+| `CONTROL_PLANE_URL` | optional | Online API-key verification endpoint. This compose recipe defaults it to `https://cp.ondara.cloud` (the image's own default is `http://localhost:8080`), so a manual `docker run` without this compose needs it set explicitly. |
 | `API_KEY_PUBLIC_KEY` | optional | RS256 **public** half for **offline** API-key verification (air-gapped; no round-trip). |
 | `API_KEY_REVOCATION_POLL_SECONDS` | optional | Revocation-list refresh interval (default `60`). |
 
@@ -104,8 +106,7 @@ openssl pkey -in player_jwt.pem -pubout -out player_jwt.pub
 ## How licensing & auth work
 
 - **License**: a Control-Plane-signed RS256 JWT. The data plane verifies it offline,
-  in-process (against the pinned/built-in public key, or `LICENSE_PUBLIC_KEY` if set).
-  No phone-home.
+  in-process, against a public key **pinned in its binary** (no env override). No phone-home.
 - **API keys** (how your game/SDK authenticates to the data plane): created in the cloud
   console, tied to your account. The data plane verifies them either:
   - **online** — `CONTROL_PLANE_URL=https://cp.ondara.cloud` (round-trip per key, cached), or
@@ -124,9 +125,15 @@ openssl pkey -in player_jwt.pem -pubout -out player_jwt.pub
    one. Revocations take effect immediately in online mode, or within
    `API_KEY_REVOCATION_POLL_SECONDS` in offline mode. No data-plane restart needed.
 
+Test that a key is valid by hitting an **authenticated** endpoint (a `secret` key
+returns `200`; a missing/invalid/revoked key returns `401`):
+
 ```bash
-curl -H 'X-API-Key: YOUR_KEY' http://localhost:8080/health
+curl -H 'X-API-Key: YOUR_SECRET_KEY' http://localhost:8080/api/v1/currencies
 ```
+
+`/health` is an **unauthenticated** liveness probe — it ignores `X-API-Key` and always
+returns `200` while the process is up, so it is not a key-validity check.
 
 ## Operate & upgrade
 

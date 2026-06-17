@@ -7,7 +7,6 @@ services:
     environment:
       - DEPLOYMENT_MODE=selfhosted
       - ONDARA_LICENSE_KEY=${ONDARA_LICENSE_KEY}
-      - LICENSE_PUBLIC_KEY=${LICENSE_PUBLIC_KEY:-}
       # API keys you create in the cloud console are verified against the Control Plane.
       - CONTROL_PLANE_URL=${CONTROL_PLANE_URL:-https://cp.ondara.cloud}
       - M2M_SECRET=${M2M_SECRET}
