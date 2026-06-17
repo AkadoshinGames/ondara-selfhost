@@ -137,6 +137,10 @@ returns `200` while the process is up, so it is not a key-validity check.
 
 ## Operate & upgrade
 
+> **Operations:** for backup & restore, secret rotation (incl. the player-JWT keypair),
+> license updates, image upgrades, health checks, and log locations, see the
+> **[Operator Runbook](./RUNBOOK.md)**.
+
 ```bash
 # from your install dir (default ~/ondara)
 docker compose ps
