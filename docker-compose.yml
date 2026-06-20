@@ -29,6 +29,12 @@ services:
       # Set CORS_ORIGINS to your game/console origin. "*" is for local testing ONLY.
       - CORS_ORIGINS=${CORS_ORIGINS:-https://console.example.com}
     ports:
+      # Plain HTTP on :8080. The data-plane does NOT terminate TLS itself — player
+      # session tokens and secret API keys travel on this port, so DO NOT expose it
+      # directly to the internet. Put a TLS-terminating reverse proxy (Caddy, nginx,
+      # Traefik, or your cloud LB) in front and bind this to localhost in production:
+      #   - "127.0.0.1:8080:8080"
+      # See RUNBOOK.md "TLS / reverse proxy" for an example.
       - "8080:8080"
     depends_on:
       postgres:

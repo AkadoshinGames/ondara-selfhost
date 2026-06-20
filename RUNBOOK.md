@@ -33,6 +33,37 @@ The `data-plane` itself is stateless: it can be recreated freely. Your durable s
 
 ---
 
+## TLS / reverse proxy (required for internet exposure)
+
+The `data-plane` serves **plain HTTP on `:8080`** and does **not** terminate TLS itself.
+Player session tokens (`Authorization: Bearer …`) and **secret API keys** (`X-API-Key`)
+travel on this port, so it **must not** be exposed directly to the internet.
+
+Put a TLS-terminating reverse proxy in front and bind the container to loopback:
+
+```yaml
+# docker-compose.yml — bind to localhost so only the proxy can reach it
+ports:
+  - "127.0.0.1:8080:8080"
+```
+
+Example Caddy (auto-HTTPS via Let's Encrypt):
+
+```
+api.yourgame.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Then point `CORS_ORIGINS` (and your game/console config) at the **https** origin.
+
+> Postgres connections inside the compose network use `sslmode=disable` by default
+> because Postgres sits on the `internal: true` network (never published), so traffic
+> never leaves the Docker bridge. If you move Postgres to a separate host, set
+> `DB_SSLMODE=require` (or stricter) in `.env` and configure server certificates.
+
+---
+
 ## Backup & restore
 
 ### What holds what
