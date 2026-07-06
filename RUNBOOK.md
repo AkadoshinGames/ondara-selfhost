@@ -20,7 +20,7 @@ generated — treat it as the source of truth and back it up offline.
 
 | Service | Port | Image | State |
 |---|---|---|---|
-| `data-plane` | `8080:8080` | `ghcr.io/akadoshin/ondara-services/data-plane:latest` | stateless (state lives in Postgres + Redis) |
+| `data-plane` | `127.0.0.1:8080:8080` (loopback default; see TLS section) | `ghcr.io/akadoshin/ondara-services/data-plane:1.0.0` (immutable pinned tag) | stateless (state lives in Postgres + Redis) |
 | `postgres` | internal only | `postgres:16-alpine` | volume `pgdata`, DB `ondara_dataplane`, user `ondara` |
 | `redis` | internal only | `redis:7-alpine` | volume `redis-data`, `--maxmemory 128mb --maxmemory-policy allkeys-lru` |
 
@@ -33,19 +33,45 @@ The `data-plane` itself is stateless: it can be recreated freely. Your durable s
 
 ---
 
+## Database tuning
+
+The bundled `postgres` service ships a `command:` that overrides three stock Postgres
+defaults so the planner reliably uses the composite economy/leaderboard indexes and keeps
+sorts (`ORDER BY score`, large `jsonb`) in RAM instead of spilling to disk:
+
+| Knob | Bundled value | Why |
+| --- | --- | --- |
+| `shared_buffers` | `64MB` | ~25% of the 256M container limit. |
+| `effective_cache_size` | `192MB` | Tells the planner how much OS/page cache to assume, so it prefers index scans. |
+| `work_mem` | `8MB` | Per-sort/hash memory; keeps leaderboard + jsonb sorts off disk. |
+
+These are sized for the default **256 MB** Postgres container limit. **On a bigger box,
+raise both the memory limit and these knobs together** — a common rule of thumb is
+`shared_buffers ≈ 25%` and `effective_cache_size ≈ 50–75%` of the RAM you give the
+container. Edit the `command:` in `docker-compose.yml` and `docker compose up -d postgres`
+to apply.
+
+---
+
 ## TLS / reverse proxy (required for internet exposure)
 
 The `data-plane` serves **plain HTTP on `:8080`** and does **not** terminate TLS itself.
 Player session tokens (`Authorization: Bearer …`) and **secret API keys** (`X-API-Key`)
 travel on this port, so it **must not** be exposed directly to the internet.
 
-Put a TLS-terminating reverse proxy in front and bind the container to loopback:
+The shipped `docker-compose.yml` **binds `data-plane` to loopback by default**
+(`127.0.0.1:8080:8080`), so only processes on the host (e.g. your reverse proxy) can
+reach it. Put a TLS-terminating reverse proxy in front:
 
 ```yaml
-# docker-compose.yml — bind to localhost so only the proxy can reach it
+# docker-compose.yml — default binding (only the proxy on this host can reach it)
 ports:
   - "127.0.0.1:8080:8080"
 ```
+
+> The `0.0.0.0` binding (`"8080:8080"`) is commented out as an explicit opt-in. Use it
+> ONLY when a TLS-terminating proxy / load balancer is the real public entrypoint —
+> never to serve plain HTTP to the internet directly.
 
 Example Caddy (auto-HTTPS via Let's Encrypt):
 
@@ -248,9 +274,10 @@ docker compose up -d        # recreate changed containers; schema migrations aut
 
 Schema migrations are applied automatically by the data-plane on startup (golang-migrate),
 so upgrades are pull-and-up — no manual migration step. Recommended: take a Postgres dump
-(above) **before** `pull` so you can roll back if a migration surprises you. To pin a
-specific version instead of `:latest`, set the image tag in `docker-compose.yml` and
-`up -d`.
+(above) **before** `pull` so you can roll back if a migration surprises you. The shipped
+`docker-compose.yml` pins the data-plane to an **immutable tag** (e.g.
+`data-plane:1.0.0`), so `pull` just re-fetches that exact tag. To move to a newer release,
+bump the image tag in `docker-compose.yml` to the new version and `up -d`.
 
 ---
 

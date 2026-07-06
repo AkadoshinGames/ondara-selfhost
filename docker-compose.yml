@@ -2,7 +2,9 @@ services:
   # Ondara data-plane (data + economy on one app, port 8080). Pulls the published
   # image — no source needed. Verifies your license offline (in-process, RS256).
   data-plane:
-    image: ghcr.io/akadoshin/ondara-services/data-plane:latest
+    # Pinned to an immutable release tag (matches the Pi deployment) — NOT :latest, so a
+    # `docker compose pull` can't silently swap in an untested build. Bump on each release.
+    image: ghcr.io/akadoshin/ondara-services/data-plane:1.0.0
     restart: unless-stopped
     environment:
       - DEPLOYMENT_MODE=selfhosted
@@ -30,12 +32,14 @@ services:
       - CORS_ORIGINS=${CORS_ORIGINS:-https://console.example.com}
     ports:
       # Plain HTTP on :8080. The data-plane does NOT terminate TLS itself — player
-      # session tokens and secret API keys travel on this port, so DO NOT expose it
-      # directly to the internet. Put a TLS-terminating reverse proxy (Caddy, nginx,
-      # Traefik, or your cloud LB) in front and bind this to localhost in production:
-      #   - "127.0.0.1:8080:8080"
-      # See RUNBOOK.md "TLS / reverse proxy" for an example.
-      - "8080:8080"
+      # session tokens and secret API keys travel on this port, so it is bound to
+      # LOOPBACK by default. Put a TLS-terminating reverse proxy (Caddy, nginx,
+      # Traefik, or your cloud LB) in front of it. See RUNBOOK.md "TLS / reverse proxy".
+      - "127.0.0.1:8080:8080"
+      # ⚠ OPT-IN ONLY — uncomment to expose on all interfaces (0.0.0.0). Do this ONLY
+      # if a TLS-terminating reverse proxy / LB is the actual public entrypoint, never
+      # to serve plain HTTP to the internet directly.
+      #   - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -62,6 +66,19 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Tuned for the 256M container limit below so the planner actually picks the
+    # composite economy/leaderboard indexes and ORDER BY / jsonb sorts stay in RAM
+    # instead of spilling to disk (stock 16-alpine ships shared_buffers=128MB /
+    # work_mem=4MB / a tiny effective_cache_size). On a bigger box raise these
+    # alongside the memory limit — see RUNBOOK.md.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - effective_cache_size=192MB
+      - -c
+      - work_mem=8MB
     environment:
       - POSTGRES_USER=ondara
       - POSTGRES_PASSWORD=${DB_PASSWORD:-ondara_selfhosted}
